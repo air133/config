@@ -1,0 +1,100 @@
+# ORACLE DOCKERFILES PROJECT
+# --------------------------
+# This is the Dockerfile for Oracle WebLogic Server 12.2.1.3 Generic Distro
+# REQUIRED FILES TO BUILD THIS IMAGE
+# ----------------------------------
+# (1) fmw_12.2.1.3.0_wls_Disk1_1of1.zip
+#     Download the Generic installer from http://www.oracle.com/technetwrok/middleware/weblogic/downloads/wls-for-dev-1703574.html
+#
+# (2) server-jre-8uXX-linux-x64.tar.gz
+#     Download from http://www.oracle.com/technetwork/java/javase/downloads/server-jre8-downloads-2133154.html
+# (3) Download opatch update and psu 07 2019
+# HOW TO BUILD THIS IMAGE
+# -----------------------
+# Put all downloaded files in the same directory as this Dockerfile
+# Run:
+#      $ docker build -f Dockerfile.prod.psu072019 -t WLS12213:psu072019 .
+#
+# IMPORTANT
+# ---------
+# The resulting image of this Dockerfile contains a WLS Empty Domain.
+#
+# Pull base image
+# From the Oracle Registry
+# -------------------------
+FROM oracle/serverjre:8
+
+# Maintainer
+# ----------
+MAINTAINER Taras Voronovskiy
+
+# Common environment variables required for this build (do NOT change)
+# --------------------------------------------------------------------
+ENV ORACLE_HOME=/u01/oracle \
+    USER_MEM_ARGS="-Djava.security.egd=file:/dev/./urandom" \
+    SCRIPT_FILE=/u01/oracle/createAndStartEmptyDomain.sh \
+    PATH=$PATH:${JAVA_HOME}/bin:/u01/oracle/oracle_common/common/bin:/u01/oracle/wlserver/common/bin
+
+# Setup filesystem and oracle user
+# Adjust file permissions, go to /u01 as user 'oracle' to proceed with WLS installation
+# ------------------------------------------------------------
+RUN mkdir -p /u01 && \
+    chmod a+xr /u01 && \
+    useradd -b /u01 -d /u01/oracle -m -s /bin/bash oracle
+
+# Copy scripts
+#-------------
+COPY container-scripts/createAndStartEmptyDomain.sh container-scripts/create-wls-domain.py /u01/oracle/
+
+# Domain and Server environment variables
+# ------------------------------------------------------------
+ENV DOMAIN_NAME="${DOMAIN_NAME:-base_domain}" \
+    ADMIN_LISTEN_PORT="${ADMIN_LISTEN_PORT:-7001}" \
+    ADMIN_NAME="${ADMIN_NAME:-AdminServer}" \
+    ADMINISTRATION_PORT_ENABLED="${ADMINISTRATION_PORT_ENABLED:-true}" \
+    ADMINISTRATION_PORT="${ADMINISTRATION_PORT:-9002}" \
+    ADMIN_PASSWORD="${ADMIN_PASSWORD:-weblogic1}"
+
+# Environment variables required for this build (do NOT change)
+# -------------------------------------------------------------
+ENV FMW_PKG=fmw_12.2.1.3.0_wls_Disk1_1of1.zip \
+    FMW_JAR=fmw_12.2.1.3.0_wls.jar \
+    PATCH_PKG0=p28186730_139422_Generic.zip \
+#    PATCH_PKG2=p29909359_139400_Generic.zip \
+    PATCH_PKG3=p30675853_122130_Generic.zip
+# Copy packages
+# -------------
+COPY $FMW_PKG $PATCH_PKG0 $PATCH_PKG3 install.file oraInst.loc /u01/
+RUN  chown oracle:oracle -R /u01 && \
+     chmod +xr $SCRIPT_FILE
+
+#install for PSU
+USER root
+RUN yum -y install psmisc
+# Install
+# ------------------------------------------------------------
+USER oracle
+
+RUN cd /u01 && ${JAVA_HOME}/bin/jar xf /u01/$FMW_PKG && cd - && \
+    ls /u01 && \
+    ${JAVA_HOME}/bin/java -jar /u01/$FMW_JAR -silent -responseFile /u01/install.file -invPtrLoc /u01/oraInst.loc -jreLoc $JAVA_HOME -ignoreSysPrereqs -force -novalidation ORACLE_HOME=$ORACLE_HOME INSTALL_TYPE="WebLogic Server" && \
+    rm /u01/$FMW_JAR /u01/$FMW_PKG /u01/oraInst.loc /u01/install.file && \
+    echo "START install opatch update" && \
+    cd /u01 && $JAVA_HOME/bin/jar xf /u01/$PATCH_PKG0 && \
+    java -jar /u01/6880880/opatch_generic.jar -silent oracle_home=/u01/oracle -ignoreSysPrereqs && \
+    $ORACLE_HOME/OPatch/opatch util cleanup -silent && \
+    rm -rf /u01/oracle/cfgtoollogs/opatch/* && \
+    cd /u01 && $JAVA_HOME/bin/jar xf /u01/$PATCH_PKG3 && \
+    cd /u01/30675853 && $ORACLE_HOME/OPatch/opatch apply -silent && \
+    echo "PSU January 2020 installed" && sleep 5 && \
+    $ORACLE_HOME/OPatch/opatch version && \
+    $ORACLE_HOME/OPatch/opatch lsinventory && \
+    $ORACLE_HOME/OPatch/opatch util cleanup -silent && \
+    rm /u01/$PATCH_PKG0 && rm /u01/$PATCH_PKG3 && \
+    rm -rf /u01/6880880 && rm -rf /u01/30675853 && \
+    rm -rf /u01/oracle/cfgtoollogs/opatch/*
+
+WORKDIR ${ORACLE_HOME}
+
+# Define default command to start script.
+CMD ["/u01/oracle/createAndStartEmptyDomain.sh"]
